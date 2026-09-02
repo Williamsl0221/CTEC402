@@ -1,33 +1,58 @@
 const express = require("express");
 const fs = require("fs");
-const { exec } = require("child_process");
+const path = require("path");
+const net = require("net");
+const { execFile } = require("child_process");
+const rateLimit = require("express-rate-limit");
 
 const app = express();
 
-// Vulnerability 1: Reflected Cross-Site Scripting (XSS)
+// Rate limiting protects the application from excessive requests
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100
+});
+
+app.use(limiter);
+
+// FIX 1: Prevent reflected XSS by returning JSON instead of raw HTML
 app.get("/hello", (req, res) => {
-    const name = req.query.name;
-    res.send("<h1>Hello " + name + "</h1>");
+    const name = String(req.query.name || "");
+    res.json({ message: `Hello ${name}` });
 });
 
-// Vulnerability 2: Path Traversal
+// FIX 2: Prevent path traversal using an allowlist
+const allowedFiles = {
+    "welcome.txt": path.join(__dirname, "public", "welcome.txt"),
+    "about.txt": path.join(__dirname, "public", "about.txt")
+};
+
 app.get("/file", (req, res) => {
-    const file = req.query.file;
-    const contents = fs.readFileSync("./public/" + file, "utf8");
-    res.send(contents);
+    const requestedFile = String(req.query.file || "");
+
+    if (!Object.prototype.hasOwnProperty.call(allowedFiles, requestedFile)) {
+        return res.status(400).send("Invalid file");
+    }
+
+    const contents = fs.readFileSync(allowedFiles[requestedFile], "utf8");
+    res.type("text/plain").send(contents);
 });
 
-// Vulnerability 3: Command Injection
+// FIX 3: Prevent command injection by validating input
+// and using execFile instead of constructing a shell command
 app.get("/ping", (req, res) => {
-    const host = req.query.host;
+    const host = String(req.query.host || "");
 
-    exec("ping " + host, (error, stdout) => {
+    if (!net.isIP(host)) {
+        return res.status(400).send("A valid IP address is required");
+    }
+
+    execFile("ping", [host], (error, stdout) => {
         if (error) {
-            res.send("Command failed");
-            return;
+            return res.status(500).send("Command failed");
         }
 
-        res.send(stdout);
+        res.type("text/plain").send(stdout);
     });
 });
 
